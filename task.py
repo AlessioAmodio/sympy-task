@@ -310,8 +310,74 @@ def calcola_limite(espressione: str, variabile: str, punto: str) -> sympy.Expr:
 
 
 def calcola_polinomio_taylor(espressione: str, variabile: str, punto: float, ordine: int) -> sympy.Expr:
-    """Sub-task 4: Calcolare una Serie di Taylor."""
-    pass
+    """Sub-task 4: Calcolare una Serie di Taylor.
+    Nota sul parametro `ordine`:
+    Qui `ordine` indica l'ordine del termine di resto O((x-a)**ordine).
+    Il polinomio restituito contiene quindi i termini fino a grado `ordine-1`.
+    Esempio: per ordine=4 si restituiscono i termini fino a (x-a)**3 (come richiesto).
+    """
+    import math
+    import numbers
+
+    # Validazioni di base
+    if not isinstance(variabile, str) or not variabile.strip():
+        raise ValueError("La variabile deve essere una stringa non vuota.")
+    if not isinstance(espressione, str) or not espressione.strip():
+        raise ValueError("L'espressione deve essere una stringa non vuota.")
+    if not isinstance(ordine, int) or ordine < 0:
+        raise ValueError("L'ordine deve essere un intero non negativo.")
+    if not isinstance(punto, numbers.Real):
+        raise ValueError("Il punto di espansione deve essere un numero reale (float o int).")
+    if math.isnan(punto) or math.isinf(punto):
+        raise ValueError("Il punto di espansione deve essere un numero reale finito.")
+
+    # Caso banale: se ordine == 0 non includiamo alcun termine (resto O((x-a)**0) non sensato)
+    if ordine == 0:
+        return sp.Integer(0)
+
+    # Parsing (cached) e simbolo
+    expr = _parse_expression_cached(espressione, (variabile,))
+    var = sp.Symbol(variabile)
+    a = sp.Float(float(punto))
+
+    # Primo tentativo: usare series con order = ordine (così otteniamo O((x-a)**ordine))
+    try:
+        s = sp.series(expr, var, a, ordine)
+        # rimuove il termine O(...) e ritorna un Expr contenente i termini fino a (x-a)**(ordine-1)
+        poly = s.removeO()
+        poly = sp.expand(poly)
+        # In alcuni casi series può restituire termini con potenze negative o più alte: tronchiamo tramite derivate se necessario
+        # Verifichiamo il grado effettivo e, se supera ordine-1, usiamo il fallback per troncare
+        try:
+            deg = sp.Poly(sp.expand(poly), var).degree()
+        except Exception:
+            deg = None
+        if deg is not None and deg >= ordine:
+            raise RuntimeError("Serie contiene termini di grado >= ordine; uso fallback per troncare.")
+        return sp.simplify(poly)
+    except Exception:
+        # fallback: costruzione tramite definizione con derivate fino a ordine-1
+        pass
+
+    # Fallback robusto: somma dei termini tramite derivate fino a k = ordine-1
+    try:
+        terms = []
+        for k in range(0, ordine):
+            deriv_k = sp.diff(expr, var, k)
+            deriv_k_at_a = deriv_k.subs(var, a)
+            # se la derivata non è valutabile simbolicamente, proviamo a numerificarla
+            if not (deriv_k_at_a.is_Number or deriv_k_at_a.is_real):
+                try:
+                    deriv_k_at_a = sp.N(deriv_k_at_a)
+                except Exception:
+                    pass
+            coeff = deriv_k_at_a / sp.factorial(k)
+            term = coeff * (var - a) ** k
+            terms.append(term)
+        poly = sp.simplify(sp.expand(sum(terms)))
+        return poly
+    except Exception as exc:
+        raise ValueError(f"Impossibile calcolare il polinomio di Taylor: {exc}") from exc
 
 def risolvi_sistema_lineare(eq1: str, eq2: str, var1: str, var2: str) -> Dict[sympy.Symbol, sympy.Expr]:
     """Sub-task 5: Risolvere un Sistema Lineare."""
