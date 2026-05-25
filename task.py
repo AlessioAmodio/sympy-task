@@ -381,14 +381,113 @@ def calcola_polinomio_taylor(espressione: str, variabile: str, punto: float, ord
 
 def risolvi_sistema_lineare(eq1: str, eq2: str, var1: str, var2: str) -> Dict[sympy.Symbol, sympy.Expr]:
     """Sub-task 5: Risolvere un Sistema Lineare."""
-    pass
+    """Sub-task 5: Risolvere un Sistema Lineare.
+
+    Parametri
+    ----------
+    eq1, eq2 : str
+        Espressioni che rappresentano le equazioni scritte in forma "expr = 0"
+        (es. "x + y - 3" corrisponde a x + y - 3 = 0).
+    var1, var2 : str
+        Nomi delle due incognite (es. "x", "y").
+
+    Ritorna
+    -------
+    Dict[sympy.Symbol, sympy.Expr]
+        Dizionario {Symbol(var1): soluzione_x, Symbol(var2): soluzione_y}.
+
+    Solleva
+    ------
+    ValueError
+        Se gli input non sono validi, se il sistema non ha soluzioni o ha infinite soluzioni
+        non rappresentabili come soluzione unica (restituisce la prima soluzione parametrica se presente).
+    """
+    # Validazioni di base
+    if not isinstance(var1, str) or not var1.strip():
+        raise ValueError("var1 deve essere una stringa non vuota.")
+    if not isinstance(var2, str) or not var2.strip():
+        raise ValueError("var2 deve essere una stringa non vuota.")
+    if not isinstance(eq1, str) or not eq1.strip():
+        raise ValueError("eq1 deve essere una stringa non vuota.")
+    if not isinstance(eq2, str) or not eq2.strip():
+        raise ValueError("eq2 deve essere una stringa non vuota.")
+
+    # Simboli delle variabili
+    x = sp.Symbol(var1)
+    y = sp.Symbol(var2)
+
+    # Parsing delle equazioni (usa il parser cached definito nel file)
+    try:
+        e1 = _parse_expression_cached(eq1, (var1, var2))
+        e2 = _parse_expression_cached(eq2, (var1, var2))
+    except Exception as exc:
+        raise ValueError(f"Errore nel parsing delle equazioni: {exc}") from exc
+
+    # Assicuriamoci che le espressioni siano trattate come equazioni = 0
+    # (l'utente fornisce già la forma "expr" che equivale a expr = 0)
+    # Proviamo la risoluzione con sympy.solve (restituisce soluzioni simboliche o parametriche)
+    try:
+        sol_list = sp.solve([e1, e2], (x, y), dict=True, simplify=True)
+    except Exception as exc:
+        # Se solve fallisce, proviamo linear_eq_to_matrix come alternativa per sistemi lineari
+        try:
+            A, b = sp.linear_eq_to_matrix([e1, e2], [x, y])
+            sol = A.gauss_jordan_solve(b) if hasattr(A, "gauss_jordan_solve") else None
+            if sol is None:
+                raise
+            # gauss_jordan_solve può restituire (solution_vector, params) — gestiamo con solve standard se possibile
+            raise RuntimeError("solve alternativo non implementato; riprova con equazioni lineari standard.")
+        except Exception as exc2:
+            raise ValueError(f"Impossibile risolvere il sistema: {exc2}") from exc
+
+    # sol_list è una lista di dizionari; può essere vuota (nessuna soluzione),
+    # contenere una soluzione unica [{x: val, y: val}], o soluzioni parametriche.
+    if not sol_list:
+        raise ValueError("Il sistema non ha soluzioni (inconsistente).")
+
+    # Prendiamo la prima soluzione trovata (sympy può restituire più soluzioni in casi non lineari)
+    sol = sol_list[0]
+
+    # Verifica che le due variabili siano presenti nella soluzione; se no, proviamo a ricavare valori mancanti
+    # (ad esempio sympy può restituire solo x e lasciare y libero come parametro)
+    result: Dict[sp.Symbol, sp.Expr] = {}
+
+    # Se la soluzione è una singola espressione (caso insolito), gestiamolo
+    if not isinstance(sol, dict):
+        raise ValueError("Formato soluzione inatteso da SymPy.")
+
+    # Inseriamo le soluzioni per x e y; se una variabile manca, lasciamo il simbolo come parametro nella soluzione
+    if x in sol:
+        result[x] = sp.simplify(sol[x])
+    else:
+        # se manca, proviamo a risolvere per quella variabile isolatamente
+        try:
+            val = sp.solve(e1.subs(sol), x)
+            result[x] = sp.simplify(val[0]) if val else sol.get(x, x)
+        except Exception:
+            result[x] = sol.get(x, x)
+
+    if y in sol:
+        result[y] = sp.simplify(sol[y])
+    else:
+        try:
+            val = sp.solve(e1.subs(sol), y)
+            result[y] = sp.simplify(val[0]) if val else sol.get(y, y)
+        except Exception:
+            result[y] = sol.get(y, y)
+
+    # Controllo finale: se la soluzione contiene parametri (infinite soluzioni), restituiamo comunque la soluzione parametrica
+    # ma avvisiamo l'utente tramite ValueError se si desidera solo soluzioni uniche (qui restituiamo la prima soluzione trovata).
+    # Qui non solleviamo errore: restituiamo la soluzione parametrica così com'è.
+    return result
+
 
 def main():
     print("Sub-task 1:", calcola_derivata("ln(z)", "z"))
     print("Sub-task 2:", calcola_integrale_definito("3*x**4+5*x+7*x", "x", -2, 3))
     print("Sub-task 3:", calcola_limite("(x**2 - 1)/(x - 1)", "x", "1"))
     print("Sub-task 4:", calcola_polinomio_taylor("exp(x)", "x", 0.0, 4))
-    print("Sub-task 5:", risolvi_sistema_lineare("x + y - 3", "x - y - 1", "x", "y"))
+    print("Sub-task 5:", risolvi_sistema_lineare("2*x + y - 5", "x + 3*y - 5", "y", "x"))
 
 if __name__ == "__main__":
     main()
