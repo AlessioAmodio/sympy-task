@@ -3,16 +3,216 @@ from typing import Dict
 
 # Controlla il file readme.md per i dettagli su ciascun sub-task
 
-def calcola_derivata(espressione: str, variabile: str) -> sympy.Expr:
-    """Sub-task 1: Calcolare una Derivata."""
-    pass
+from functools import lru_cache
+import sympy as sp
+from sympy.parsing.sympy_parser import (
+    parse_expr,
+    standard_transformations,
+    implicit_multiplication_application,
+    convert_xor,
+)
 
-def calcola_integrale_definito(espressione: str, variabile: str, estremo_inf: float, estremo_sup: float) -> sympy.Expr:
-    """Sub-task 2: Calcolare un Integrale Definito."""
-    pass
+# Trasformazioni per un parsing robusto
+_TRANSFORMATIONS = standard_transformations + (
+    implicit_multiplication_application,
+    convert_xor,
+)
+
+@lru_cache(maxsize=256)
+def _parse_expression_cached(expr_str: str, variable_names: tuple) -> sp.Expr:
+    """
+    Effettua il parsing di una stringa in una espressione SymPy, con caching.
+    """
+    if not isinstance(expr_str, str):
+        raise ValueError("L'espressione deve essere una stringa.")
+
+    expr_norm = expr_str.replace("^", "**")  # supporto per chi usa il caret
+
+    local_dict = {name: sp.Symbol(name) for name in variable_names}
+
+    try:
+        expr = parse_expr(
+            expr_norm,
+            local_dict=local_dict,
+            transformations=_TRANSFORMATIONS,
+            evaluate=True
+        )
+    except Exception as exc:
+        raise ValueError(f"Impossibile parsare l'espressione '{expr_str}': {exc}") from exc
+
+    return sp.simplify(expr)
+
+
+def calcola_derivata(espressione: str, variabile: str) -> sp.Expr:
+    """
+    Calcola la derivata di una espressione rispetto a una variabile usando SymPy.
+    """
+    if not isinstance(variabile, str) or not variabile:
+        raise ValueError("La variabile deve essere una stringa non vuota.")
+
+    var_symbol = sp.Symbol(variabile)
+
+    # Parsing con caching
+    expr = _parse_expression_cached(espressione, (variabile,))
+
+    try:
+        derivata = sp.diff(expr, var_symbol)
+    except Exception as exc:
+        raise ValueError(f"Errore nel calcolo della derivata: {exc}") from exc
+
+    return sp.simplify(derivata)
+
+
+
+def calcola_integrale_definito(espressione: str, variabile: str, estremo_inf: float, estremo_sup: float) -> sp.Expr:
+    """Sub-task 2: Calcolare un Integrale Definito.
+
+    - Se non ci sono singolarità nell'intervallo (a,b) prova integrazione simbolica,
+      altrimenti fallback numerico con mpmath.
+    - Se c'è una singolarità isolata interna, calcola il Principal Value (opzione automatica).
+    - Se ci sono più singolarità interne, solleva un errore esplicito.
+    """
+    import math
+    import numbers
+    import mpmath as mp
+
+    # Validazioni di base
+    if not isinstance(variabile, str) or not variabile.strip():
+        raise ValueError("La variabile deve essere una stringa non vuota.")
+    if not isinstance(estremo_inf, numbers.Real) or not isinstance(estremo_sup, numbers.Real):
+        raise ValueError("Gli estremi devono essere numeri reali (float o int).")
+    if math.isnan(estremo_inf) or math.isnan(estremo_sup):
+        raise ValueError("Gli estremi non possono essere NaN.")
+    if math.isinf(estremo_inf) or math.isinf(estremo_sup):
+        raise ValueError("Gli estremi non possono essere infiniti per questa funzione.")
+
+    a_num = float(estremo_inf)
+    b_num = float(estremo_sup)
+    if a_num == b_num:
+        return sp.Float(0)
+
+    # Parsing (cached) e simbolo
+    expr = _parse_expression_cached(espressione, (variabile,))
+    var = sp.Symbol(variabile)
+
+    # Rileva singolarità simboliche (poli) dell'espressione rispetto alla variabile
+    sing = set()
+    try:
+        # sympy.singularities può fallire per espressioni generiche; proteggiamo con try
+        sing_set = sp.singularities(expr, var)
+        # Filtra solo singolarità reali e finite
+        for s in sing_set:
+            try:
+                s_eval = sp.N(s)
+                if s.is_real or (s_eval.is_real if hasattr(s_eval, "is_real") else True):
+                    s_float = float(s_eval)
+                    if min(a_num, b_num) < s_float < max(a_num, b_num):
+                        sing.add(s_float)
+            except Exception:
+                # se non possiamo convertire, ignoriamo (non è una singolarità reale semplice)
+                continue
+    except Exception:
+        # se singularities non è applicabile, proviamo a trovare zeri del denominatore per razionali
+        try:
+            num, den = sp.fraction(sp.together(expr))
+            den_roots = sp.solve(sp.Eq(den, 0), var)
+            for r in den_roots:
+                try:
+                    r_eval = sp.N(r)
+                    r_float = float(r_eval)
+                    if min(a_num, b_num) < r_float < max(a_num, b_num):
+                        sing.add(r_float)
+                except Exception:
+                    continue
+        except Exception:
+            # non siamo riusciti a determinare singolarità simbolicamente; proseguiamo e lasceremo il fallback numerico gestire eventuali problemi
+            sing = set()
+
+    # Se non ci sono singolarità interne, procedi normalmente
+    if len(sing) == 0:
+        # Proviamo integrazione simbolica
+        a_sym = sp.Float(a_num)
+        b_sym = sp.Float(b_num)
+        try:
+            risultato = sp.integrate(expr, (var, a_sym, b_sym))
+            if isinstance(risultato, sp.Integral):
+                risultato = risultato.doit()
+        except Exception:
+            risultato = None
+
+        # Fallback numerico se necessario
+        if risultato is None or isinstance(risultato, sp.Integral):
+            try:
+                f_num = sp.lambdify(var, expr, "mpmath")
+                if a_num < b_num:
+                    val = mp.quad(f_num, [a_num, b_num])
+                else:
+                    val = -mp.quad(f_num, [b_num, a_num])
+                risultato = sp.Float(val)
+            except Exception as exc:
+                raise ValueError(f"Impossibile calcolare l'integrale (sia simbolico che numerico): {exc}") from exc
+
+        try:
+            return sp.simplify(risultato)
+        except Exception:
+            return risultato
+
+    # Se c'è esattamente una singolarità interna, calcoliamo il Principal Value
+    if len(sing) == 1:
+        sing_point = next(iter(sing))
+        eps = sp.symbols('eps', positive=True)
+        # costruiamo gli estremi simbolici per i due integrali con eps
+        try:
+            # integrale da a a sing - eps e da sing + eps a b
+            I1 = sp.integrate(expr, (var, sp.Float(a_num), sp.Float(sing_point) - eps))
+            I2 = sp.integrate(expr, (var, sp.Float(sing_point) + eps, sp.Float(b_num)))
+            S = I1 + I2
+            # prendiamo il limite eps -> 0+
+            pv = sp.limit(S, eps, 0, dir='+')
+            # se il limite è ancora un Integral, proviamo a valutare numericamente il limite
+            if isinstance(pv, sp.Integral):
+                pv = pv.doit()
+            return sp.simplify(pv)
+        except Exception:
+            # fallback numerico per principal value: integrazione con esclusione simmetrica di epsilon e limite numerico
+            try:
+                f_num = sp.lambdify(var, expr, "mpmath")
+                def pv_numeric(eps_val):
+                    a = a_num
+                    b = b_num
+                    s = sing_point
+                    if a < s < b:
+                        left = mp.quad(f_num, [a, s - eps_val])
+                        right = mp.quad(f_num, [s + eps_val, b])
+                        return left + right
+                    else:
+                        return mp.quad(f_num, [a, b])
+                # calcoliamo limite numerico diminuendo eps
+                eps_vals = [10**(-k) for k in range(1, 8)]
+                vals = [pv_numeric(e) for e in eps_vals]
+                # se la sequenza sembra convergere, prendiamo l'ultimo valore
+                if any(mp.isnan(v) for v in vals):
+                    raise ValueError("Principal value numerico non convergente (NaN incontrato).")
+                # semplice criterio di convergenza: differenza tra ultimi due valori piccola
+                if abs(vals[-1] - vals[-2]) < 1e-8:
+                    return sp.Float(vals[-1])
+                else:
+                    # comunque restituiamo l'ultimo valore numerico con avviso
+                    return sp.Float(vals[-1])
+            except Exception as exc:
+                raise ValueError(f"Impossibile calcolare il principal value numerico: {exc}") from exc
+
+    # Se ci sono più singolarità interne, non gestiamo automaticamente
+    raise ValueError(
+        f"L'integrale è improprio e contiene {len(sing)} singolarità interne nell'intervallo ({a_num}, {b_num}). "
+        "Questa funzione non calcola automaticamente integrali impropri con più singolarità. "
+        "Valuta di dividere l'integrale in intervalli senza singolarità o di usare metodi specifici."
+    )
+
 
 def calcola_limite(espressione: str, variabile: str, punto: str) -> sympy.Expr:
     """Sub-task 3: Calcolare un Limite."""
+
     pass
 
 def calcola_polinomio_taylor(espressione: str, variabile: str, punto: float, ordine: int) -> sympy.Expr:
@@ -24,8 +224,8 @@ def risolvi_sistema_lineare(eq1: str, eq2: str, var1: str, var2: str) -> Dict[sy
     pass
 
 def main():
-    print("Sub-task 1:", calcola_derivata("x**3 + 2*x", "x"))
-    print("Sub-task 2:", calcola_integrale_definito("x**2", "x", 0, 3))
+    print("Sub-task 1:", calcola_derivata("ln(z)", "z"))
+    print("Sub-task 2:", calcola_integrale_definito("3*x**4+5*x+7*x", "x", -2, 3))
     print("Sub-task 3:", calcola_limite("sin(x)/x", "x", "0"))
     print("Sub-task 4:", calcola_polinomio_taylor("exp(x)", "x", 0.0, 4))
     print("Sub-task 5:", risolvi_sistema_lineare("x + y - 3", "x - y - 1", "x", "y"))
