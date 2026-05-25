@@ -212,8 +212,102 @@ def calcola_integrale_definito(espressione: str, variabile: str, estremo_inf: fl
 
 def calcola_limite(espressione: str, variabile: str, punto: str) -> sympy.Expr:
     """Sub-task 3: Calcolare un Limite."""
+    import math
 
-    pass
+    # Validazioni di base
+    if not isinstance(variabile, str) or not variabile.strip():
+        raise ValueError("La variabile deve essere una stringa non vuota.")
+    if not isinstance(punto, str) or not punto.strip():
+        raise ValueError("Il punto deve essere una stringa non vuota (es. '0', 'oo', '0+', 'pi/2').")
+
+    # Parsing dell'espressione (cached) e simbolo
+    expr = _parse_expression_cached(espressione, (variabile,))
+    var = sp.Symbol(variabile)
+
+    # Normalizza e interpreta il punto e la direzione
+    p_raw = punto.strip()
+    # direzione esplicita: '+' o '-'
+    direction = None
+    if p_raw.endswith('+') or p_raw.endswith('-'):
+        direction = p_raw[-1]
+        p_core = p_raw[:-1].strip()
+        if p_core == '':
+            # caso "0+" o "0-" non ha p_core vuoto, ma se l'utente scrive "+" o "-" solo, rifiutiamo
+            raise ValueError(f"Punto non valido: '{punto}'")
+    else:
+        p_core = p_raw
+
+    # Mappa token comuni di infinito
+    p_low = p_core.lower()
+    if p_low in {"oo", "infty", "infinity", "inf"}:
+        point_sym = sp.oo
+    elif p_low in {"-oo", "-infty", "-infinity", "-inf"}:
+        point_sym = -sp.oo
+    else:
+        # prova a parsare numeri o simboli (es. "pi", "1/2")
+        try:
+            point_sym = parse_expr(p_core.replace("^", "**"), transformations=_TRANSFORMATIONS, evaluate=True)
+        except Exception as exc:
+            raise ValueError(f"Impossibile parsare il punto '{p_core}': {exc}") from exc
+
+    # Funzione di utilità per semplificare e normalizzare il risultato
+    def _clean(res):
+        try:
+            return sp.simplify(res)
+        except Exception:
+            return res
+
+    # Se è stata richiesta una direzione esplicita, usala direttamente
+    if direction in {'+', '-'}:
+        try:
+            res = sp.limit(expr, var, point_sym, dir=direction)
+            return _clean(res)
+        except Exception as exc:
+            raise ValueError(f"Errore nel calcolo del limite unilaterale {p_core}{direction}: {exc}") from exc
+
+    # Altrimenti proviamo il limite bidirezionale/simmetrico
+    try:
+        res = sp.limit(expr, var, point_sym)
+        # se sympy ritorna un oggetto Limit o non riesce, gestiamo con unilaterali
+        if isinstance(res, sp.Limit) or res is None:
+            raise RuntimeError("Limit non valutato simbolicamente")
+        return _clean(res)
+    except Exception:
+        # fallback: calcola i limiti unilaterali e confrontali
+        try:
+            left = sp.limit(expr, var, point_sym, dir='-')
+        except Exception:
+            left = None
+        try:
+            right = sp.limit(expr, var, point_sym, dir='+')
+        except Exception:
+            right = None
+
+        # Se entrambi sono valutati e uguali, restituisci il valore comune
+        if left is not None and right is not None:
+            # confrontiamo in modo robusto: se la differenza si semplifica a 0 consideriamo uguali
+            try:
+                diff = sp.simplify(left - right)
+                if diff == 0:
+                    return _clean(left)
+                # se uno è infinito e l'altro uguale, restituiamo quell'infinito
+                if (left in (sp.oo, -sp.oo)) and left == right:
+                    return left
+            except Exception:
+                pass
+            # se diversi, il limite bidirezionale non esiste
+            raise ValueError(
+                f"Il limite bidirezionale in '{p_core}' non esiste: limite sinistro = {left}, limite destro = {right}."
+            )
+        # Se solo uno dei due è valutabile, restituiamo quello (informando che è unilaterale)
+        if left is not None and right is None:
+            return _clean(left)
+        if right is not None and left is None:
+            return _clean(right)
+
+        # Se nessuno dei tentativi ha funzionato, segnaliamo l'errore
+        raise ValueError(f"Impossibile calcolare il limite in '{punto}' per l'espressione data.")
+
 
 def calcola_polinomio_taylor(espressione: str, variabile: str, punto: float, ordine: int) -> sympy.Expr:
     """Sub-task 4: Calcolare una Serie di Taylor."""
@@ -226,7 +320,7 @@ def risolvi_sistema_lineare(eq1: str, eq2: str, var1: str, var2: str) -> Dict[sy
 def main():
     print("Sub-task 1:", calcola_derivata("ln(z)", "z"))
     print("Sub-task 2:", calcola_integrale_definito("3*x**4+5*x+7*x", "x", -2, 3))
-    print("Sub-task 3:", calcola_limite("sin(x)/x", "x", "0"))
+    print("Sub-task 3:", calcola_limite("(x**2 - 1)/(x - 1)", "x", "1"))
     print("Sub-task 4:", calcola_polinomio_taylor("exp(x)", "x", 0.0, 4))
     print("Sub-task 5:", risolvi_sistema_lineare("x + y - 3", "x - y - 1", "x", "y"))
 
